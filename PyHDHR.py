@@ -5,10 +5,34 @@ import urllib
 import json
 import os
 from decimal import Decimal
+import operator
 
 URL_DISCOVER = 'http://my.hdhomerun.com/discover'
 URL_GUIDE_BASE = 'http://my.hdhomerun.com/api/guide.php?DeviceAuth='
 URL_RECORDING_RULES = 'http://my.hdhomerun.com/api/recording_rules?DeviceAuth='
+
+class SortType:
+    asc = 0
+    desc = 1
+
+class GroupType:
+    All = 0
+    SeriesID = 1
+    Category = 2
+
+class SeriesSummary:
+    SeriesID = ""
+    ImageURL = ""
+    
+    def __init__(self,SeriesID,ImageURL):
+        self.SeriesID = SeriesID
+        self.ImageURL = ImageURL
+        
+    def getSeriesID(self):
+        return self.SeriesID
+
+    def getImageURL(self):
+        return self.ImageURL
 
 class ChannelInfo:
     GuideNumber = ""
@@ -452,6 +476,9 @@ class Tuner(BaseDevice):
 
     def getConditionalAccess(self):
         return self.ConditionalAccess
+        
+    def getChannelInfos(self):
+        return self.ChannelInfos
 
     def discover(self):
         if time.time() - self.LastDiscover < 60:
@@ -642,6 +669,30 @@ class PyHDHR:
         self.ChannelArray.sort()
         return self.ChannelArray
         
+    def getWhatsOn(self,guideno=None):
+        self.discover()
+        
+        if not guideno:
+            onprogs = {}
+            for key in self.ChannelInfos:
+                progs = self.ChannelInfos[key].getProgramInfos()
+                if len(progs) > 0:
+                    onprogs[self.ChannelInfos[key].getGuideNumber()] = progs[0]
+            return onprogs        
+        else:
+            if guideno in self.ChannelInfos:
+                progs = self.ChannelInfos[guideno].getProgramInfos()
+                if len(progs) > 0:
+                    return progs[0]
+        
+    def getLiveTVURL(self,guideno):
+        self.discover(True)
+        for tunerkey in self.Tuners:
+            chaninfos = self.Tuners[tunerkey].getChannelInfos()
+            if guideno in chaninfos:
+                return chaninfos[guideno].getURL()
+        return None
+                
     def getRecordedPrograms(self):
         self.discover()
         self.RecordedPrograms = {}
@@ -659,12 +710,40 @@ class PyHDHR:
                 print(type(e))
                 print(e)
                 return None
+
+    def getFilteredRecordedPrograms(self,sortby,grouptype,groupby):
+        self.discover()
+        progs = self.getRecordedPrograms()
+        
+        filteredprogs = []
+        for prog in (sorted(progs.values(), key=operator.attrgetter('RecordEndTime'), reverse=(True if sortby == SortType.asc else False))):
+            if grouptype == GroupType.All:
+                filteredprogs.append(prog)
+            elif grouptype == GroupType.SeriesID:
+                if groupby == prog.getSeriesID():
+                    filteredprogs.append(prog)
+            elif grouptype == GroupType.Category:
+                if groupby == prog.getCategory():
+                    filteredprogs.append(prog)
+            else:
+                pass
+        return filteredprogs
     
     def getRecordedProgram(self,key):
         if key in self.RecordedPrograms:
             return self.RecordedPrograms[key]
         else:
             return None
+            
+    def getRecordedSeries(self):
+        self.discover()
+        progs = self.getRecordedPrograms()
+        series = {}
+        for key in progs:
+            if progs[key].getDisplayGroupTitle() not in series:
+                ss = SeriesSummary(progs[key].getSeriesID(),progs[key].getImageURL())
+                series[progs[key].getDisplayGroupTitle()] = ss
+        return series
         
     def getRecordingRules(self):
         self.discover()
@@ -692,9 +771,10 @@ class PyHDHR:
             print(e)
             return False
         
-    def discover(self):
-        if time.time() - self.LastDiscover < 60:
-            return True
+    def discover(self,force=False):
+        if not force:
+            if time.time() - self.LastDiscover < 60:
+                return True
             
         self.LastDiscover = time.time()
             
