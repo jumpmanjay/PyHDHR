@@ -16,6 +16,11 @@ class ChannelInfo:
     ImageURL = ""
     Affiliate = ""
     ProgramInfos = []
+    VideoCodec = ""
+    AudioCodec = ""
+    HD =  -1
+    URL = ""
+    Favorite = -1
     
     def __init__(self):
         return
@@ -35,6 +40,16 @@ class ChannelInfo:
                 programinfo = ProgramInfo()
                 programinfo.parse(guideitem,PyHDHR)
                 self.ProgramInfos.append(programinfo)
+        if 'VideoCodec' in parsestr:
+            self.VideoCodec = parsestr['VideoCodec']
+        if 'AudioCodec' in parsestr:
+            self.AudioCodec = parsestr['AudioCodec']
+        if 'HD' in parsestr:
+            self.HD = parsestr['HD']
+        if 'URL' in parsestr:
+            self.URL = parsestr['URL']
+        if 'Favorite' in parsestr:
+            self.Favorite = parsestr['Favorite']
 
     def getProgramInfos(self):
         return self.ProgramInfos
@@ -47,10 +62,25 @@ class ChannelInfo:
 
     def getImageURL(self):
         return self.ImageURL
-        
+    
     def getAffiliate(self):
         return self.Affiliate
+
+    def getVideoCodec(self):
+        return self.VideoCodec
     
+    def getAudioCodec(self):
+        return self.AudioCodec
+
+    def getHD(self):
+        return self.HD
+
+    def getURL(self):
+        return self.URL
+
+    def getFavorite(self):
+        return self.Favorite
+
 class ProgramInfo:
     SeriesID = ""
     EpisodeNumber = ""
@@ -379,6 +409,7 @@ class Tuner(BaseDevice):
     FirmwareVersion = ""
     ConditionalAccess = ""
     ChannelInfos = {}
+    LastDiscover = 0
     
     def __init__(self,PyHDHR):
         self.PyHDHR = PyHDHR
@@ -423,6 +454,9 @@ class Tuner(BaseDevice):
         return self.ConditionalAccess
 
     def discover(self):
+        if time.time() - self.LastDiscover < 60:
+            return True
+
         try:
             response = urllib.urlopen(self.DiscoverURL)
             data = json.loads(response.read())
@@ -444,6 +478,27 @@ class Tuner(BaseDevice):
             return True
         except Exception as e:
             print "Tuner.discover"
+            print(type(e))
+            print(e)
+            return False
+
+    def processLineup(self,PyHDHR):
+        self.discover()
+        try:
+            response = urllib.urlopen(self.LineupURL)
+            data = json.loads(response.read())
+            for item in data:
+                if 'GuideNumber' in item:
+                    if item['GuideNumber'] in self.ChannelInfos:
+                        self.ChannelInfos[item['GuideNumber']].parse(item,self.PyHDHR)
+                    else:
+                        chaninfo = ChannelInfo()
+                        chaninfo.parse(item,self.PyHDHR)
+                        self.ChannelInfos[item['GuideNumber']] = chaninfo
+                    PyHDHR.registerChannelInfo(self.ChannelInfos[item['GuideNumber']],self)
+            return True
+        except Exception as e:
+            print "Tuner.processLineup"
             print(type(e))
             print(e)
             return False
@@ -662,11 +717,13 @@ class PyHDHR:
                     if item['DeviceID'] in self.Tuners:
                         self.Tuners[item['DeviceID']].parse(item)
                         self.Tuners[item['DeviceID']].discover()
+                        self.Tuners[item['DeviceID']].processLineup(self)
                         self.Tuners[item['DeviceID']].processGuide(self)
                     else:
                         tuner = Tuner(self)
                         tuner.parse(item)
                         tuner.discover()
+                        tuner.processLineup(self)
                         tuner.processGuide(self)
                         self.Tuners[item['DeviceID']] = tuner
                 else:
