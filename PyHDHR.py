@@ -118,6 +118,10 @@ class ChannelInfo:
             self.URL = parsestr['URL']
         if 'Favorite' in parsestr:
             self.Favorite = parsestr['Favorite']
+        if self.HD != -1:
+            self.Tuner.addHD()
+        else:
+            self.Tuner.addSD()
 
     def getProgramInfos(self):
         return self.ProgramInfos
@@ -483,6 +487,8 @@ class Tuner(BaseDevice):
     LastDiscover = 0
     LastTranscodeOptionDiscover = 0
     TranscodeOption = None
+    HDCount = 0
+    SDCount = 0
     
     def __init__(self,PyHDHR):
         self.PyHDHR = PyHDHR
@@ -499,6 +505,18 @@ class Tuner(BaseDevice):
         if 'LineupURL' in parsestr:
             self.LineupURL = parsestr['LineupURL']
         
+    def addHD(self):
+        self.HDCount = self.HDCount + 1
+    
+    def getHDCount(self):
+        return self.HDCount
+        
+    def addSD(self):
+        self.SDCount = self.SDCount + 1
+        
+    def getSDCount(self):
+        return self.SDCount    
+
     def getDeviceID(self):
         return self.DeviceID
         
@@ -537,10 +555,7 @@ class Tuner(BaseDevice):
 
         if self.ModelNumber == "HDTC-2US":
             try:
-                regx = Regex('/([0-9]+.[0-9]+.[0-9]+.[0-9]+)').search(self.DiscoverURL)
-                ip = regx.group(1)                
-                
-                response = urllib2.urlopen("http://"+ip+"/transcode.html",None,5)
+                response = urllib2.urlopen(self.BaseURL+"/transcode.html",None,5)
 
                 regx = Regex('transcodeChanged\(\)">((.|\n)+?)</select>').search(response.read())
                 selecttags = regx.group(1)
@@ -584,6 +599,9 @@ class Tuner(BaseDevice):
     def processLineup(self,PyHDHR):
         self.discover()
         try:
+            self.SDCount = 0
+            self.HDCount = 0
+
             response = urllib2.urlopen(self.LineupURL,None,5)
             data = json.loads(response.read())
             for item in data:
@@ -717,6 +735,20 @@ class PyHDHR:
         self.discover()
         return self.ProgramFilters
         
+    def getHDCount(self):
+        self.discover()
+        count = 0
+        for tunerkey in self.Tuners:
+            count = count + self.Tuners[tunerkey].getHDCount()
+        return count
+
+    def getSDCount(self):
+        self.discover()
+        count = 0
+        for tunerkey in self.Tuners:
+            count = count + self.Tuners[tunerkey].getSDCount()
+        return count
+        
     def registerChannelInfo(self,chaninfo,tuner):
         if chaninfo.getGuideNumber() in self.ChannelLineup:
             if tuner not in self.ChannelLineup[chaninfo.getGuideNumber()]:
@@ -760,7 +792,24 @@ class PyHDHR:
         for tunerkey in self.Tuners:
             chaninfos = self.Tuners[tunerkey].getChannelInfos()
             if guideno in chaninfos:
-                return chaninfos[guideno].getURL()
+                usethis = True
+                try:
+                    response = urllib2.urlopen(chaninfos[guideno].getURL()+"?duration=1",None,5)
+                except urllib2.URLError as e:
+                    Log.Critical("urllib2.URLError: "+str(e))
+                    usethis = False
+                except urllib2.HTTPError as e:
+                    regx = re.search('HTTP Error 503:',e)
+                    if regx != None:
+                        Log.Debug("All tuners in use on "+self.Tuners[tunerkey].getLocalIP())
+                    else:
+                        Log.Critical("urllib2.HTTPError: "+str(e))
+                    usethis = False
+                except Exception as e:
+                    Log.Critical("Exception: "+str(e))
+                    usethis = False
+                if usethis == True:
+                    return chaninfos[guideno].getURL()
         return None
                 
     def getRecordedPrograms(self,force=False):
@@ -773,7 +822,6 @@ class PyHDHR:
         self.LastRecordedDiscover = time.time()
 
         self.RecordedPrograms = {}
-        print("getRecordedPrograms - DVRs:"+str(self.DVRs))
         for key in self.DVRs:
             Log.Debug("getRecordedPrograms key:"+key)
             try:
@@ -899,25 +947,17 @@ class PyHDHR:
         try:
             response = urllib2.urlopen(URL_DISCOVER,None,5)
             data = json.loads(response.read())
-            print("PyHDHR.discover")
-            print("data:"+str(data))
             for item in data:
-                print("item:"+str(item))
                 if 'StorageID' in item and 'StorageURL' in item:
                     #DVR
                     if item['StorageID'] in self.DVRs:
-                        print("existing dvr:"+item['StorageID'])
                         self.DVRs[item['StorageID']].parse(item)
                         self.DVRs[item['StorageID']].discover()
                     else:
-                        print("new dvr:"+item['StorageID'])
                         dvr = DVR()
                         dvr.parse(item)
                         if dvr.discover():
-                            print("discovered successfully")
                             self.DVRs[item['StorageID']] = dvr
-                        else:
-                            print("discover failed")
                 elif 'DeviceID' in item and 'LineupURL' in item:
                     #Tuner
                     if item['DeviceID'] in self.Tuners:
@@ -934,12 +974,69 @@ class PyHDHR:
                             self.Tuners[item['DeviceID']] = tuner
                 else:
                     Log.Debug("PyHDHR.discover - could not determine device type - " + str(item))
-            print("done disovering. dvrs:"+str(self.DVRs))
             return True
         except Exception as e:
             Log.Critical("Exception in PyHDHR.discover while attempting to load: "+str(URL_DISCOVER))
             Log.Critical(e)
             return False
+            
+    def discoveryDebug(self):
+        outputstr = ""
+        outputstr = outputstr+"<<< Discovery Debug >>>\n"
+        try:
+            outputstr = outputstr+"<<< Discover (MAIN): "+URL_DISCOVER+" >>>\n"
+            response = urllib2.urlopen(URL_DISCOVER,None,5)
+            data = json.loads(response.read())
+            outputstr = outputstr+"<<< (MAIN) >>>\n<<<\n"+str(data)+"\n>>>\n"
+            for item in data:
+                if 'StorageID' in item and 'StorageURL' in item and 'DiscoverURL' in item:
+                    #DVR
+                    outputstr = outputstr+"<<< Discover (DVR): "+item['DiscoverURL']+" >>>\n"
+                    try:
+                        response1 = urllib2.urlopen(item['DiscoverURL'],None,5)
+                        data1 = json.loads(response1.read())
+                        outputstr = outputstr+"<<< (DVR) >>>\n<<<\n"+str(data1)+"\n>>>\n"
+                    except Exception as e:
+                        Log.Critical("Exception in PyHDHR.discoveryDump while attempting to load: "+str(item['DiscoverURL']))
+                        Log.Critical(e)
+                        Log.Critical("dump (failed):\n"+outputstr+"")
+                    outputstr = outputstr+"<<< Discover (DVR_STORAGE): "+item['StorageURL']+" >>>\n"
+                    try:
+                        response1 = urllib2.urlopen(item['StorageURL'],None,5)
+                        data1 = json.loads(response1.read())
+                        outputstr = outputstr+"<<< (DVR_STORAGE) >>>\n<<<\n"+str(data1)+"\n>>>\n"
+                    except Exception as e:
+                        Log.Critical("Exception in PyHDHR.discoveryDump while attempting to load: "+str(item['StorageURL']))
+                        Log.Critical(e)
+                        Log.Critical("dump (failed):\n"+outputstr+"")
+                elif 'DeviceID' in item and 'LineupURL' in item and 'DiscoverURL' in item:
+                    #Tuner
+                    outputstr = outputstr+"<<< Discover (TUNER): "+item['DiscoverURL']+" >>>\n"
+                    try:
+                        response1 = urllib2.urlopen(item['DiscoverURL'],None,5)
+                        data1 = json.loads(response1.read())
+                        outputstr = outputstr+"<<< (TUNER) >>>\n<<<\n"+str(data1)+"\n>>>\n"
+                    except Exception as e:
+                        Log.Critical("Exception in PyHDHR.discoveryDump while attempting to load: "+str(item['DiscoverURL']))
+                        Log.Critical(e)
+                        Log.Critical("dump (failed):\n"+outputstr+"")
+                    outputstr = outputstr+"<<< Discover (TUNER_LINEUP): "+item['LineupURL']+" >>>\n"
+                    try:
+                        response1 = urllib2.urlopen(item['LineupURL'],None,5)
+                        data1 = json.loads(response1.read())
+                        outputstr = outputstr+"<<< (TUNER_LINEUP) >>>\n<<<\n"+str(data1)+"\n>>>\n"
+                    except Exception as e:
+                        Log.Critical("Exception in PyHDHR.discoveryDump while attempting to load: "+str(item['LineupURL']))
+                        Log.Critical(e)
+                        Log.Critical("dump (failed):\n"+outputstr+"")
+                else:
+                    outputstr = outputstr+"PyHDHR.discoveryDump - could not determine device type - " + str(item)
+        except Exception as e:
+            Log.Critical("Exception in PyHDHR.discoveryDump while attempting to load: "+str(URL_DISCOVER))
+            Log.Critical(e)
+            Log.Critical("dump (failed):\n"+outputstr+"")
+        Log.Debug("dump (success):\n"+outputstr+"")
+
             
     def discoveryDump(self,filename):
         f = open(filename,'w')
